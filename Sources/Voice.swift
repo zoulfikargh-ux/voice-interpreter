@@ -196,7 +196,7 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
         if !manual {
             vad = [
                 "type": "server_vad",
-                "threshold": 0.7,
+                "threshold": 0.75,
                 "prefix_padding_ms": 300,
                 "silence_duration_ms": s.silenceMs,
                 "create_response": true,
