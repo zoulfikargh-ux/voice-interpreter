@@ -196,7 +196,7 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
         if !manual {
             vad = [
                 "type": "server_vad",
-                "threshold": 0.5,
+                "threshold": 0.7,
                 "prefix_padding_ms": 300,
                 "silence_duration_ms": s.silenceMs,
                 "create_response": true,
@@ -213,6 +213,7 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
                     "input": [
                         "format": ["type": "audio/pcm", "rate": 24000],
                         "transcription": ["model": "gpt-4o-mini-transcribe"],
+                        "noise_reduction": ["type": (s.headphones || headphonesNow) ? "near_field" : "far_field"],
                         "turn_detection": vad
                     ],
                     "output": [
