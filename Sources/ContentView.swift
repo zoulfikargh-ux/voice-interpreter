@@ -185,7 +185,7 @@ struct SettingsView: View {
                     }
                     Text("الأدق: الاتجاه بيتحدد من نص الكلام نفسه (حروف عربية أو صينية)، واللغة التالتة والضجيج بيتجاهلهم. المحرك الصوتي المباشر بيخمّن لحاله وممكن يغلط.")
                         .font(.footnote).foregroundColor(.secondary)
-                    Toggle("ترجمة فورية (بيبلّش وإنت لسا عم تحكي)", isOn: $settings.live)
+                    Toggle("ترجمة شبه فورية (أقل دقة، الافتراضي مطفي)", isOn: $settings.live)
                     Text("غيّر الفوري ووقّف وشغّل من جديد ليتطبّق.")
                         .font(.footnote).foregroundColor(.secondary)
                 }
@@ -197,6 +197,12 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .environment(\.layoutDirection, .leftToRight)
                     SecureField("Claude  sk-ant-...", text: $settings.keyAnthropic)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .environment(\.layoutDirection, .leftToRight)
+                    SecureField("Azure Speech key (سمع ونطق)", text: $settings.keyAzure)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .environment(\.layoutDirection, .leftToRight)
+                    TextField("منطقة Azure مثل westeurope", text: $settings.azureRegion)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .environment(\.layoutDirection, .leftToRight)
                     TextField("موديل الصوتي: gpt-realtime-2.1", text: $settings.model)
@@ -217,7 +223,7 @@ struct SettingsView: View {
                     Picker("سرعة الرد", selection: $settings.silenceMs) {
                         ForEach(speeds, id: \.0) { Text($0.1).tag($0.0) }
                     }
-                    Toggle("صوت بنت (محرك آبل)", isOn: $settings.female)
+                    Toggle("صوت بنت (Azure وآبل)", isOn: $settings.female)
                     Toggle("أنا لابس سماعات (يسمع وهو عم يحكي)", isOn: $settings.headphones)
                 }
                 Section("كلمات مهمة") {

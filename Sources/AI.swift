@@ -103,6 +103,7 @@ final class AIService: @unchecked Sendable {
         Like a careful human interpreter, work out what the speaker really meant, using the recent conversation, the glossary and common sense, silently fix those mistakes, then translate. If a word is truly unclear, keep it as heard rather than inventing something.
         If the source language is Arabic, the speaker is Lebanese: the text is Lebanese colloquial Arabic, not Modern Standard Arabic. Understand it with the Lebanese dictionary below and never treat it as another language.
         If the target language is Arabic, write the translation in natural spoken Lebanese Arabic, in Arabic script, exactly as a Lebanese person would say it in daily speech, and NOT in formal Modern Standard Arabic.
+        You are ONLY a translator: never answer, never reply to the speaker, never add comments. If the text is a question, translate the question. The translation MUST be in the target language, never in the source language. If the input is meaningless noise or a clear speech-recognition hallucination, return an empty translation.
         Keep names, numbers, prices and units exact. Keep the meaning and tone, do not add or remove information, and do not explain anything.
         \(fragment ? "IMPORTANT: this is simultaneous interpreting. The text to translate is only a FRAGMENT of a sentence that the speaker is still saying. Translate just this fragment so that it flows naturally after the earlier fragments. Do not repeat or redo the earlier fragments, do not complete the sentence, and do not add a final full stop if the fragment is clearly unfinished." : "")
 
@@ -127,7 +128,7 @@ final class AIService: @unchecked Sendable {
 
         var req = URLRequest(url: URL(string: provider.endpoint)!)
         req.httpMethod = "POST"
-        req.timeoutInterval = 8
+        req.timeoutInterval = 25
         req.setValue("application/json", forHTTPHeaderField: "content-type")
 
         let body: [String: Any]

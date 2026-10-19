@@ -270,7 +270,8 @@ final class CloudEngine: ObservableObject {
 
     func start() {
         let k = s.keyOpenAI.trimmingCharacters(in: .whitespacesAndNewlines)
-        if k.isEmpty { status = "حط مفتاح OpenAI بالإعدادات (للسمع والنطق)"; return }
+        let azk = s.keyAzure.trimmingCharacters(in: .whitespacesAndNewlines)
+        if azk.isEmpty && k.isEmpty { status = "حط مفتاح Azure بالإعدادات (للسمع والنطق)"; return }
         guard let p = s.provider else { return }
         if s.key(for: p).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             status = "حط مفتاح \(p.label) بالإعدادات"
@@ -345,9 +346,9 @@ final class CloudEngine: ObservableObject {
         if s.mode == "advisor" {
             capture.pauseEnd = 0.8; capture.minChunk = 0.8; capture.maxChunk = 20
         } else if s.live {
-            capture.pauseEnd = 0.4; capture.minChunk = 0.8; capture.maxChunk = 5
+            capture.pauseEnd = 0.5; capture.minChunk = 1.2; capture.maxChunk = 8
         } else {
-            capture.pauseEnd = 0.8; capture.minChunk = 0.8; capture.maxChunk = 20
+            capture.pauseEnd = 0.7; capture.minChunk = 0.8; capture.maxChunk = 15
         }
     }
 
@@ -378,6 +379,8 @@ final class CloudEngine: ObservableObject {
         }
         guard let b = best else { return nil }
         if b.0 == .en && b.1 < 3 { return nil }
+        if b.0 == .zh && b.1 < 2 { return nil }
+        if b.0 == .ar && b.1 < 3 { return nil }
         return b.0
     }
 
@@ -425,15 +428,23 @@ final class CloudEngine: ObservableObject {
         guard running, let p = s.provider else { return }
         let key = s.keyOpenAI.trimmingCharacters(in: .whitespacesAndNewlines)
         let glossary = s.glossary.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prompt = glossary
+        let prompt = "Conversation about trade and business in Lebanese Arabic, Mandarin Chinese or English. " + glossary
         status = "عم يسمع…"
+        let az = s.keyAzure.trimmingCharacters(in: .whitespacesAndNewlines)
+        let region = s.azureRegion
+        let pairLangs = s.langs
 
         let before = prevA
         let taskA = Task { @MainActor [weak self] () -> Job? in
             // 1) speech to text, runs in parallel with the other pieces
             var text = ""
             do {
-                text = try await OpenAIAudio.transcribe(wav: wav, key: key, prompt: prompt)
+                if !az.isEmpty {
+                    let p = self?.s.mode == "advisor" ? [Lang.ar] : [pairLangs.0, pairLangs.1]
+                    text = try await AzureSTT.transcribe(wav: wav, langs: p, key: az, region: region)
+                } else {
+                    text = try await OpenAIAudio.transcribe(wav: wav, key: key, prompt: prompt)
+                }
             } catch {
                 self?.addLine(.err, "تعذر السمع: \(error.localizedDescription)")
                 _ = await before?.value
@@ -503,6 +514,20 @@ final class CloudEngine: ObservableObject {
         } catch {
             errText = error.localizedDescription
         }
+        if var t0 = translation, detectScript(t0) == job.src, job.src != .en {
+            // same language came back: retry once, strictly
+            if let r = try? await ai.process(text: job.chunk, from: job.src, to: job.dst, context: [], glossary: s.glossary,
+                                             provider: p, key: key, model: s.textModel, previous: "", fragment: false) {
+                t0 = r.translation
+            }
+            translation = detectScript(t0) == job.src ? nil : t0
+            if translation == nil { errText = "رجع بنفس اللغة" }
+        }
+        if let t0 = translation, t0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            await before?.value
+            status = "جاهز، احكي…"
+            return
+        }
         guard let t = translation else {
             addLine(.err, "تعذرت الترجمة: \(errText)")
             await before?.value
@@ -511,7 +536,7 @@ final class CloudEngine: ObservableObject {
 
         var pcm: Data? = nil
         do {
-            pcm = try await OpenAIAudio.speak(text: t, voice: s.voice, instructions: Self.ttsStyle(job.dst), key: openai)
+            pcm = try await say(t, job.dst, openaiKey: openai)
         } catch {
             addLine(.err, "تعذر النطق: \(error.localizedDescription)")
         }
@@ -533,8 +558,7 @@ final class CloudEngine: ObservableObject {
         do {
             let a = try await ai.chat(system: system, messages: history, provider: p, key: s.key(for: p), model: s.textModel)
             history.append(["role": "assistant", "content": a])
-            let pcm = try? await OpenAIAudio.speak(text: a, voice: s.voice, instructions: Self.ttsStyle(.ar),
-                                                    key: s.keyOpenAI.trimmingCharacters(in: .whitespacesAndNewlines))
+            let pcm = try? await say(a, .ar, openaiKey: s.keyOpenAI.trimmingCharacters(in: .whitespacesAndNewlines))
             await before?.value
             setLine(job.aiID, a)
             spokenCorpus = String((spokenCorpus + normalized(a)).suffix(600))
@@ -544,6 +568,34 @@ final class CloudEngine: ObservableObject {
             await before?.value
         }
         status = "جاهز، احكي…"
+    }
+
+    /// Azure speaks when its key is set, otherwise OpenAI speaks.
+    private func say(_ text: String, _ lang: Lang, openaiKey: String) async throws -> Data {
+        let az = s.keyAzure.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !az.isEmpty {
+            do {
+                return try await AzureTTS.speak(text: text, lang: lang, female: s.female, key: az, region: s.azureRegion)
+            } catch {
+                addLine(.err, "Azure: \(error.localizedDescription)")
+            }
+        }
+        return try await OpenAIAudio.speak(text: text, voice: s.voice, instructions: Self.ttsStyle(lang), key: openaiKey)
+    }
+
+    private func detectScript(_ t: String) -> Lang? {
+        var ar = 0, zh = 0, latin = 0
+        for u in t.unicodeScalars {
+            switch u.value {
+            case 0x0600...0x06FF, 0x0750...0x077F: ar += 1
+            case 0x4E00...0x9FFF, 0x3400...0x4DBF: zh += 1
+            case 0x41...0x5A, 0x61...0x7A: latin += 1
+            default: break
+            }
+        }
+        let m = max(ar, zh, latin)
+        if m == 0 { return nil }
+        return m == ar ? .ar : (m == zh ? .zh : .en)
     }
 
     static func ttsStyle(_ l: Lang) -> String {

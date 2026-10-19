@@ -19,6 +19,8 @@ final class Settings: ObservableObject {
     @Published var keyOpenAI: String { didSet { KeyStore.save(keyOpenAI, .openai) } }
     @Published var keyDeepSeek: String { didSet { KeyStore.save(keyDeepSeek, .deepseek) } }
     @Published var keyAnthropic: String { didSet { KeyStore.save(keyAnthropic, .anthropic) } }
+    @Published var keyAzure: String { didSet { AzureStore.save(keyAzure) } }
+    @Published var azureRegion: String { didSet { d.set(azureRegion, forKey: "azureRegion") } }
 
     init() {
         var e = d.string(forKey: "engine") ?? "cloud"
@@ -28,7 +30,7 @@ final class Settings: ObservableObject {
         brain = b
         mode = d.string(forKey: "mode") ?? "interp"
         pair = d.string(forKey: "pair") ?? "arzh"
-        live = d.object(forKey: "live") as? Bool ?? true
+        live = d.object(forKey: "live") as? Bool ?? false
         voice = d.string(forKey: "voice") ?? "marin"
         female = d.bool(forKey: "female")
         model = d.string(forKey: "model") ?? "gpt-realtime-2.1"
@@ -40,6 +42,8 @@ final class Settings: ObservableObject {
         keyOpenAI = KeyStore.load(.openai)
         keyDeepSeek = KeyStore.load(.deepseek)
         keyAnthropic = KeyStore.load(.anthropic)
+        keyAzure = AzureStore.load()
+        azureRegion = d.string(forKey: "azureRegion") ?? "westeurope"
     }
 
     /// The AI that translates (all engines except the OpenAI voice one).
