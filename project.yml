@@ -1,0 +1,31 @@
+name: Voice
+options:
+  bundleIdPrefix: com.zoulfikar
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "5.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  Voice:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: مترجم مباشر
+        NSMicrophoneUsageDescription: للاستماع إلى المحادثة وترجمتها أو الرد عليك صوتياً
+        UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zoulfikar.voice
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
