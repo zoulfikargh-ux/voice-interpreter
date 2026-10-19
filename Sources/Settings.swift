@@ -4,7 +4,8 @@ import Security
 final class Settings: ObservableObject {
     private let d = UserDefaults.standard
 
-    @Published var engine: String { didSet { d.set(engine, forKey: "engine") } }     // realtime | deepseek | openai | anthropic
+    @Published var engine: String { didSet { d.set(engine, forKey: "engine") } }     // cloud | realtime | apple
+    @Published var brain: String { didSet { d.set(brain, forKey: "brain") } }       // deepseek | openai | anthropic
     @Published var mode: String { didSet { d.set(mode, forKey: "mode") } }          // interp | advisor
     @Published var pair: String { didSet { d.set(pair, forKey: "pair") } }          // arzh | aren | enzh
     @Published var live: Bool { didSet { d.set(live, forKey: "live") } }            // simultaneous interpreting
@@ -20,7 +21,11 @@ final class Settings: ObservableObject {
     @Published var keyAnthropic: String { didSet { KeyStore.save(keyAnthropic, .anthropic) } }
 
     init() {
-        engine = d.string(forKey: "engine") ?? "realtime"
+        var e = d.string(forKey: "engine") ?? "cloud"
+        var b = d.string(forKey: "brain") ?? "openai"
+        if ["deepseek", "openai", "anthropic"].contains(e) { b = e; e = "cloud" }
+        engine = e
+        brain = b
         mode = d.string(forKey: "mode") ?? "interp"
         pair = d.string(forKey: "pair") ?? "arzh"
         live = d.object(forKey: "live") as? Bool ?? true
@@ -37,14 +42,10 @@ final class Settings: ObservableObject {
         keyAnthropic = KeyStore.load(.anthropic)
     }
 
-    /// The text provider when the engine is not the OpenAI voice one.
+    /// The AI that translates (all engines except the OpenAI voice one).
     var provider: AIProvider? {
-        switch engine {
-        case "deepseek": return .deepseek
-        case "openai": return .openai
-        case "anthropic": return .anthropic
-        default: return nil
-        }
+        if engine == "realtime" { return nil }
+        return AIProvider(rawValue: brain) ?? .openai
     }
 
     func key(for p: AIProvider) -> String {

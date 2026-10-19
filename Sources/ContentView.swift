@@ -11,6 +11,7 @@ struct ContentView: View {
     @StateObject private var settings: Settings
     @StateObject private var voice: Voice
     @StateObject private var text: TextEngine
+    @StateObject private var cloud: CloudEngine
     @State private var showSettings = false
 
     init() {
@@ -18,16 +19,46 @@ struct ContentView: View {
         _settings = StateObject(wrappedValue: st)
         _voice = StateObject(wrappedValue: Voice(settings: st))
         _text = StateObject(wrappedValue: TextEngine(settings: st))
+        _cloud = StateObject(wrappedValue: CloudEngine(settings: st))
     }
 
-    private var isRT: Bool { settings.engine == "realtime" }
-    private var lines: [ChatLine] { isRT ? voice.lines : text.lines }
-    private var status: String { isRT ? voice.status : text.status }
-    private var running: Bool { isRT ? voice.running : text.running }
-    private var talking: Bool { isRT ? voice.talking : text.talking }
+    private var lines: [ChatLine] {
+        switch settings.engine {
+        case "realtime": return voice.lines
+        case "apple": return text.lines
+        default: return cloud.lines
+        }
+    }
+    private var status: String {
+        switch settings.engine {
+        case "realtime": return voice.status
+        case "apple": return text.status
+        default: return cloud.status
+        }
+    }
+    private var running: Bool {
+        switch settings.engine {
+        case "realtime": return voice.running
+        case "apple": return text.running
+        default: return cloud.running
+        }
+    }
+    private var talking: Bool {
+        switch settings.engine {
+        case "realtime": return voice.talking
+        case "apple": return text.talking
+        default: return cloud.talking
+        }
+    }
 
-    private func refresh() { voice.refreshInstructions(); text.refresh() }
-    private func toggle() { if isRT { voice.toggle() } else { text.toggle() } }
+    private func refresh() { voice.refreshInstructions(); text.refresh(); cloud.refresh() }
+    private func toggle() {
+        switch settings.engine {
+        case "realtime": voice.toggle()
+        case "apple": text.toggle()
+        default: cloud.toggle()
+        }
+    }
 
     private let pairs: [(String, String)] = [("arzh", "عربي ⇄ صيني"), ("aren", "عربي ⇄ إنجليزي"), ("enzh", "إنجليزي ⇄ صيني")]
 
@@ -40,7 +71,7 @@ struct ContentView: View {
             footer
         }
         .environment(\.layoutDirection, .rightToLeft)
-        .sheet(isPresented: $showSettings) { SettingsView(settings: settings, voice: voice, text: text) }
+        .sheet(isPresented: $showSettings) { SettingsView(settings: settings, voice: voice, text: text, cloud: cloud) }
         .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
     }
 
@@ -124,6 +155,7 @@ struct SettingsView: View {
     @ObservedObject var settings: Settings
     @ObservedObject var voice: Voice
     @ObservedObject var text: TextEngine
+    @ObservedObject var cloud: CloudEngine
     @Environment(\.dismiss) private var dismiss
 
     private let voices: [(String, String)] = [
@@ -136,16 +168,22 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("المحرك (اللي بدك تشتغل عليه)") {
+                Section("المحرك") {
                     Picker("المحرك", selection: Binding(get: { settings.engine }, set: { v in
-                        voice.stop(); text.stop(); settings.engine = v
+                        voice.stop(); text.stop(); cloud.stop(); settings.engine = v
                     })) {
-                        Text("OpenAI صوتي مباشر (الأسرع)").tag("realtime")
-                        Text("DeepSeek (نصي)").tag("deepseek")
-                        Text("OpenAI (نصي)").tag("openai")
-                        Text("Claude (نصي)").tag("anthropic")
+                        Text("الأدق: سمع OpenAI + ترجمة + نطق OpenAI").tag("cloud")
+                        Text("OpenAI صوتي مباشر (تجريبي)").tag("realtime")
+                        Text("آيفون بس (سمع ونطق من آبل)").tag("apple")
                     }
-                    Text("الصوتي المباشر بيسمع وبيحكي بنفسه. النصي بيسمع الآيفون، والـAI بيترجم، والآيفون بينطق.")
+                    if settings.engine != "realtime" {
+                        Picker("مين بيترجم", selection: $settings.brain) {
+                            Text("OpenAI").tag("openai")
+                            Text("DeepSeek").tag("deepseek")
+                            Text("Claude").tag("anthropic")
+                        }
+                    }
+                    Text("الأدق: الاتجاه بيتحدد من نص الكلام نفسه (حروف عربية أو صينية)، واللغة التالتة والضجيج بيتجاهلهم. المحرك الصوتي المباشر بيخمّن لحاله وممكن يغلط.")
                         .font(.footnote).foregroundColor(.secondary)
                     Toggle("ترجمة فورية (بيبلّش وإنت لسا عم تحكي)", isOn: $settings.live)
                     Text("غيّر الفوري ووقّف وشغّل من جديد ليتطبّق.")
@@ -179,15 +217,15 @@ struct SettingsView: View {
                     Picker("سرعة الرد", selection: $settings.silenceMs) {
                         ForEach(speeds, id: \.0) { Text($0.1).tag($0.0) }
                     }
-                    Toggle("صوت بنت بالمحركات النصية", isOn: $settings.female)
+                    Toggle("صوت بنت (محرك آبل)", isOn: $settings.female)
                     Toggle("أنا لابس سماعات (يسمع وهو عم يحكي)", isOn: $settings.headphones)
                 }
                 Section("كلمات مهمة") {
                     TextField("أسماء، بضاعة، مصطلحات", text: $settings.glossary, axis: .vertical)
-                    Button("تطبيق") { voice.refreshInstructions(); text.refresh() }
+                    Button("تطبيق") { voice.refreshInstructions(); text.refresh(); cloud.refresh() }
                 }
                 Section {
-                    Button("مسح المحادثة") { voice.clear(); text.clear() }
+                    Button("مسح المحادثة") { voice.clear(); text.clear(); cloud.clear() }
                 }
             }
             .navigationTitle("الإعدادات")
