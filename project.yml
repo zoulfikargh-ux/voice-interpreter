@@ -6,7 +6,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "5.0"
+    MARKETING_VERSION: "6.0"
     CURRENT_PROJECT_VERSION: "1"
 targets:
   Voice:
@@ -19,6 +19,7 @@ targets:
       properties:
         CFBundleDisplayName: مترجم مباشر
         NSMicrophoneUsageDescription: للاستماع إلى المحادثة وترجمتها أو الرد عليك صوتياً
+        NSSpeechRecognitionUsageDescription: لتحويل الكلام إلى نص قبل ترجمته
         UILaunchScreen: {}
         UIBackgroundModes:
           - audio

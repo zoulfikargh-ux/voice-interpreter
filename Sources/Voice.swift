@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import QuartzCore
 
 struct ChatLine: Identifiable {
     enum Kind { case me, ai, err }
@@ -35,6 +36,18 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
     private var speaking = 0
     private var playGen = 0
 
+    // simultaneous mode (client side voice detection, audio is committed in short pieces)
+    private let sendQ = DispatchQueue(label: "voice.send")
+    private var respActive = false
+    private var respPending = false
+    private var chunkSamples = 0
+    private var chunkHasSpeech = false
+    private var lastLoud = CACurrentMediaTime()
+    private var noise: Float = 0.004
+    private var preRoll: [String] = []
+    private var talkingFlag = false
+    private var lastEnd = CACurrentMediaTime() - 10
+
     private var userLine: [String: UUID] = [:]
     private var respLine: UUID?
 
@@ -50,7 +63,7 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
     }
 
     func start() {
-        let k = s.key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let k = s.keyOpenAI.trimmingCharacters(in: .whitespacesAndNewlines)
         if k.isEmpty { setStatus("حط مفتاح OpenAI بالإعدادات"); return }
         AVAudioApplication.requestRecordPermission { granted in
             DispatchQueue.main.async {
@@ -85,12 +98,14 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
         }
         wantRun = true
         retry = 0
+        resetChunk()
         running = true
         setStatus("عم يتصل…")
         connect()
     }
 
     func stop() {
+        guard running || wantRun else { return }
         wantRun = false
         ready = false
         gen += 1
@@ -120,7 +135,7 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
         let enc = model.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? model
         guard let url = URL(string: "wss://api.openai.com/v1/realtime?model=\(enc)") else { return }
         var req = URLRequest(url: url)
-        req.setValue("Bearer \(s.key.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(s.keyOpenAI.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
         let sess = URLSession(configuration: .default)
         session = sess
         let t = sess.webSocketTask(with: req)
@@ -175,7 +190,19 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
     }
 
     private func sendConfig() {
-        let instr = Instructions.build(mode: s.mode, pair: s.pair, glossary: s.glossary)
+        let instr = Instructions.build(mode: s.mode, pair: s.pair, glossary: s.glossary, live: s.live && s.mode == "interp")
+        let manual = s.live && s.mode == "interp"
+        var vad: Any = NSNull()
+        if !manual {
+            vad = [
+                "type": "server_vad",
+                "threshold": 0.5,
+                "prefix_padding_ms": 300,
+                "silence_duration_ms": s.silenceMs,
+                "create_response": true,
+                "interrupt_response": true
+            ] as [String: Any]
+        }
         sendJSON([
             "type": "session.update",
             "session": [
@@ -186,14 +213,7 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
                     "input": [
                         "format": ["type": "audio/pcm", "rate": 24000],
                         "transcription": ["model": "gpt-4o-mini-transcribe"],
-                        "turn_detection": [
-                            "type": "server_vad",
-                            "threshold": 0.5,
-                            "prefix_padding_ms": 300,
-                            "silence_duration_ms": s.silenceMs,
-                            "create_response": true,
-                            "interrupt_response": true
-                        ]
+                        "turn_detection": vad
                     ],
                     "output": [
                         "format": ["type": "audio/pcm", "rate": 24000],
@@ -209,7 +229,7 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
         guard running, ready else { return }
         sendJSON([
             "type": "session.update",
-            "session": ["type": "realtime", "instructions": Instructions.build(mode: s.mode, pair: s.pair, glossary: s.glossary)]
+            "session": ["type": "realtime", "instructions": Instructions.build(mode: s.mode, pair: s.pair, glossary: s.glossary, live: s.live && s.mode == "interp")]
         ])
     }
 
@@ -251,12 +271,14 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
                 }
             case "response.created":
                 self.respLine = nil
+                self.lock.lock(); self.respActive = true; self.lock.unlock()
             case "response.output_audio_transcript.delta":
                 let d = (ev["delta"] as? String) ?? ""
                 if self.respLine == nil { self.respLine = self.addLine(.ai, "") }
                 if let lid = self.respLine { self.appendLine(lid, d) }
             case "response.done":
                 self.respLine = nil
+                self.responseFinished()
                 self.lock.lock(); let sp = self.speaking; self.lock.unlock()
                 if sp == 0 { self.setStatus("جاهز، احكي…") }
             default: break
@@ -266,14 +288,22 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
 
     // MARK: audio
 
-    private func onMic(_ buf: AVAudioPCMBuffer) {
-        guard ready, task != nil, let conv = converter else { return }
-        lock.lock(); let sp = speaking; lock.unlock()
-        if sp > 0 && !s.headphones && !headphonesNow { return }
+    private func resetChunk() {
+        chunkSamples = 0
+        chunkHasSpeech = false
+        lastLoud = CACurrentMediaTime()
+        preRoll = []
+        respActive = false
+        respPending = false
+    }
 
+    private var manualMode: Bool { s.live && s.mode == "interp" }
+
+    private func convert(_ buf: AVAudioPCMBuffer) -> (String, Int)? {
+        guard let conv = converter else { return nil }
         let ratio = 24000.0 / buf.format.sampleRate
         let cap = AVAudioFrameCount(Double(buf.frameLength) * ratio) + 32
-        guard let out = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: cap) else { return }
+        guard let out = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: cap) else { return nil }
         var fed = false
         var err: NSError?
         conv.convert(to: out, error: &err) { _, st in
@@ -282,9 +312,94 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
             st.pointee = .haveData
             return buf
         }
-        guard err == nil, out.frameLength > 0, let p = out.int16ChannelData?[0] else { return }
+        guard err == nil, out.frameLength > 0, let p = out.int16ChannelData?[0] else { return nil }
         let data = Data(bytes: p, count: Int(out.frameLength) * 2)
-        sendJSON(["type": "input_audio_buffer.append", "audio": data.base64EncodedString()])
+        return (data.base64EncodedString(), Int(out.frameLength))
+    }
+
+    private func appendAudio(_ b64: String) {
+        sendQ.async { self.sendJSON(["type": "input_audio_buffer.append", "audio": b64]) }
+    }
+
+    private func onMic(_ buf: AVAudioPCMBuffer) {
+        guard ready, task != nil else { return }
+        lock.lock(); let sp = speaking; let ra = respActive; let le = lastEnd; lock.unlock()
+        if !s.headphones && !headphonesNow {
+            // no headphones: keep the microphone closed while the phone is answering, so it never hears itself
+            if sp > 0 || ra || CACurrentMediaTime() - le < 1.0 { return }
+        }
+        guard let (b64, n) = convert(buf) else { return }
+
+        if !manualMode {
+            appendAudio(b64)
+            return
+        }
+
+        // simultaneous mode: cut the audio at short pauses and ask for a translation of each piece
+        var rms: Float = 0
+        if let ch = buf.floatChannelData?[0] {
+            var sum: Float = 0
+            let c = Int(buf.frameLength)
+            for i in 0..<c { sum += ch[i] * ch[i] }
+            rms = (sum / Float(max(c, 1))).squareRoot()
+        }
+        let loud = rms > max(0.012, noise * 3)
+        let now = CACurrentMediaTime()
+        if !loud { noise = noise * 0.95 + min(rms, 0.05) * 0.05 }
+
+        if loud {
+            lastLoud = now
+            if !chunkHasSpeech {
+                chunkHasSpeech = true
+                for p in preRoll { appendAudio(p) }
+                preRoll = []
+                setTalking(true)
+            }
+        }
+
+        if chunkHasSpeech {
+            appendAudio(b64)
+            chunkSamples += n
+            let dur = Double(chunkSamples) / 24000.0
+            let quiet = now - lastLoud
+            if (quiet >= 0.22 && dur >= 1.0) || (quiet >= 0.15 && dur >= 2.0) || dur >= 3.5 || quiet >= 0.7 {
+                commitChunk()
+            }
+        } else {
+            preRoll.append(b64)
+            if preRoll.count > 4 { preRoll.removeFirst() }
+        }
+    }
+
+    private func setTalking(_ t: Bool) {
+        guard talkingFlag != t else { return }
+        talkingFlag = t
+        DispatchQueue.main.async { self.talking = t }
+    }
+
+    private func commitChunk() {
+        chunkSamples = 0
+        chunkHasSpeech = false
+        setTalking(false)
+        sendQ.async {
+            self.sendJSON(["type": "input_audio_buffer.commit"])
+            self.lock.lock()
+            let go = !self.respActive
+            if go { self.respActive = true } else { self.respPending = true }
+            self.lock.unlock()
+            if go { self.sendJSON(["type": "response.create"]) }
+        }
+    }
+
+    private func responseFinished() {
+        sendQ.async {
+            self.lock.lock()
+            self.respActive = false
+            let go = self.respPending
+            if go { self.respPending = false; self.respActive = true }
+            self.lock.unlock()
+            if go { self.sendJSON(["type": "response.create"]) }
+        }
     }
 
     private func playDelta(_ b64: String) {
@@ -308,6 +423,7 @@ final class Voice: NSObject, ObservableObject, @unchecked Sendable {
             if self.playGen == g {
                 self.speaking = max(0, self.speaking - 1)
                 finished = self.speaking == 0
+                if finished { self.lastEnd = CACurrentMediaTime() }
             }
             self.lock.unlock()
             if finished {

@@ -1,56 +1,66 @@
 import Foundation
 import Security
 
-enum Keys {
-    private static let service = "voice.openai.key"
-
-    static func load() -> String {
-        let q: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var out: AnyObject?
-        if SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
-           let d = out as? Data, let s = String(data: d, encoding: .utf8) { return s }
-        return ""
-    }
-
-    static func save(_ v: String) {
-        let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service]
-        SecItemDelete(base as CFDictionary)
-        let t = v.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty, let d = t.data(using: .utf8) else { return }
-        var add = base
-        add[kSecValueData as String] = d
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(add as CFDictionary, nil)
-    }
-}
-
 final class Settings: ObservableObject {
     private let d = UserDefaults.standard
 
+    @Published var engine: String { didSet { d.set(engine, forKey: "engine") } }     // realtime | deepseek | openai | anthropic
     @Published var mode: String { didSet { d.set(mode, forKey: "mode") } }          // interp | advisor
     @Published var pair: String { didSet { d.set(pair, forKey: "pair") } }          // arzh | aren | enzh
+    @Published var live: Bool { didSet { d.set(live, forKey: "live") } }            // simultaneous interpreting
     @Published var voice: String { didSet { d.set(voice, forKey: "voice") } }
+    @Published var female: Bool { didSet { d.set(female, forKey: "female") } }
     @Published var model: String { didSet { d.set(model, forKey: "model") } }
+    @Published var textModel: String { didSet { d.set(textModel, forKey: "textModel") } }
     @Published var silenceMs: Int { didSet { d.set(silenceMs, forKey: "silenceMs") } }
     @Published var headphones: Bool { didSet { d.set(headphones, forKey: "headphones") } }
     @Published var glossary: String { didSet { d.set(glossary, forKey: "glossary") } }
-    @Published var key: String { didSet { Keys.save(key) } }
+    @Published var keyOpenAI: String { didSet { KeyStore.save(keyOpenAI, .openai) } }
+    @Published var keyDeepSeek: String { didSet { KeyStore.save(keyDeepSeek, .deepseek) } }
+    @Published var keyAnthropic: String { didSet { KeyStore.save(keyAnthropic, .anthropic) } }
 
     init() {
+        engine = d.string(forKey: "engine") ?? "realtime"
         mode = d.string(forKey: "mode") ?? "interp"
         pair = d.string(forKey: "pair") ?? "arzh"
+        live = d.object(forKey: "live") as? Bool ?? true
         voice = d.string(forKey: "voice") ?? "marin"
+        female = d.bool(forKey: "female")
         model = d.string(forKey: "model") ?? "gpt-realtime-2.1"
+        textModel = d.string(forKey: "textModel") ?? ""
         let s = d.integer(forKey: "silenceMs")
         silenceMs = s == 0 ? 450 : s
         headphones = d.bool(forKey: "headphones")
         glossary = d.string(forKey: "glossary") ?? ""
-        key = Keys.load()
+        keyOpenAI = KeyStore.load(.openai)
+        keyDeepSeek = KeyStore.load(.deepseek)
+        keyAnthropic = KeyStore.load(.anthropic)
+    }
+
+    /// The text provider when the engine is not the OpenAI voice one.
+    var provider: AIProvider? {
+        switch engine {
+        case "deepseek": return .deepseek
+        case "openai": return .openai
+        case "anthropic": return .anthropic
+        default: return nil
+        }
+    }
+
+    func key(for p: AIProvider) -> String {
+        switch p {
+        case .openai: return keyOpenAI
+        case .deepseek: return keyDeepSeek
+        case .anthropic: return keyAnthropic
+        }
+    }
+
+    var langs: (Lang, Lang) {
+        switch pair {
+        case "aren": return (.ar, .en)
+        case "enzh": return (.en, .zh)
+        default: return (.ar, .zh)
+        }
     }
 }
 
@@ -58,7 +68,7 @@ enum Instructions {
     static let names = ["ar": "Lebanese Arabic", "zh": "Mandarin Chinese", "en": "English"]
     static let pairs: [String: (String, String)] = ["arzh": ("ar", "zh"), "aren": ("ar", "en"), "enzh": ("en", "zh")]
 
-    static func build(mode: String, pair: String, glossary: String) -> String {
+    static func build(mode: String, pair: String, glossary: String, live: Bool = false) -> String {
         let g = glossary.trimmingCharacters(in: .whitespacesAndNewlines)
         let gl = g.isEmpty ? "" : "\nImportant names and terms: \(g)\n"
         if mode == "advisor" {
@@ -73,6 +83,10 @@ enum Instructions {
             \(gl)
             """
         }
+        let liveRule = live ? """
+        7. SIMULTANEOUS INTERPRETING: the speaker's sentence reaches you in consecutive short pieces while he is still talking. Translate ONLY the newest piece, immediately, so that your speech continues the earlier translated pieces naturally. Never repeat what you already translated, never wait for the sentence to finish, and never add a closing remark.
+
+        """ : ""
         let p = pairs[pair] ?? ("ar", "zh")
         let a = names[p.0] ?? "", b = names[p.1] ?? ""
         return """
@@ -85,7 +99,7 @@ enum Instructions {
         4. Translate completely and faithfully. Keep names, numbers, prices and units exact. Like a careful human interpreter, silently fix obvious mistakes in what you heard using context, and keep the meaning and tone.
         5. Arabic here always means Lebanese colloquial Arabic. Understand it using the dictionary below. When you speak Arabic, speak natural spoken Lebanese Arabic with a Lebanese accent, exactly as a Lebanese person would say it in daily speech, NOT formal Modern Standard Arabic.
         6. Be fast and natural: start speaking as soon as you understand, use short natural phrasing.
-        \(gl)
+        \(liveRule)\(gl)
         Lebanese dictionary (Lebanese = meaning):
         \(LebaneseDictionary.words)
 
